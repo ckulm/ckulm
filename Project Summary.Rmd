@@ -1,0 +1,170 @@
+---
+title: "PSTAT 126 Project Summary"
+author: "Carter Kulm, Ameya Deshpande, Bowie Chuang, Deanna Hu"
+date: "Spring 2024"
+output:
+  html_document: default
+  pdf_document: 
+    fig_crop: no
+---
+
+
+```{r setup, include=FALSE}
+# knit options
+knitr::opts_chunk$set(echo = F,
+                      results = 'markup',
+                      fig.width = 3.5,
+                      fig.height = 2.5,
+                      fig.align = 'center',
+                      message = F,
+                      warning = F)
+
+bfcolor <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    sprintf("\\textcolor{%s}{\\textbf{%s}}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'><b>%s</b></span>", color, x)
+  } else x
+}
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(ggfortify)
+library(broom)
+library(GGally)
+library(modelr)
+library(ggpubr)
+library(leaps)
+library(MASS)
+library(ISLR)
+library(glmnet)
+```
+
+# Dataset Introduction
+```{r results = 'hide'}
+set.seed(10)
+billionaires <- read.csv("~/Desktop/PSTAT 126/Project/Billionaires Statistics Dataset.csv")
+billionaires <- billionaires %>%
+  dplyr::select(country, finalWorth, age, cpi_country, gdp_country, gross_tertiary_education_enrollment, gross_primary_education_enrollment_country, life_expectancy_country, tax_revenue_country_country, population_country, total_tax_rate_country, gender) %>%
+  drop_na()
+
+billionaires <- billionaires[sample(nrow(billionaires), 500), ]
+billionaires <- rename(billionaires, 
+       tax_revenue_country = tax_revenue_country_country, 
+       tertiary_enrollment = gross_tertiary_education_enrollment, 
+       primary_enrollment = gross_primary_education_enrollment_country,
+       tax_rate_country = total_tax_rate_country)
+billionaires <- billionaires %>%
+  mutate(
+    gdp_country = gsub("\\$", "", gdp_country),
+    gdp_country = gsub("\\,", "", gdp_country),
+    gdp_country = as.numeric(gdp_country)
+  )
+```
+
+The name of our dataset is the Billionaires Statistics dataset, which our group found on Kaggle. The dataset was compiled from various sources, including Forbes and other financial publications. 
+[Kaggle](https://www.kaggle.com/datasets/nelgiriyewithana/billionaires-statistics-dataset)
+
+This data describes the population of all 2638 billionaires in the world in 2023, giving information on the country that these billionaires live in, such as the country's gdp or primary school enrollment rate. 
+
+Our dataset consists of 13 variables total (3 categorical, 10 numeric) and 500 observations, all of which represent a unique billionaire in 2023. 
+
+Below is a table descirbing the variables in our dataset. 
+
+| **`Name`** | **`Type`** | **`Description`** |
+|-|-|-|
+| finalWorth | Numeric | Net worth (USD) of billionaire (in millions) as of 2023 |
+| age | Numeric | Age of billionaire as of 2023 |
+| gender | Categorical | Describes the gender of the billionaire |
+| country | Categorical | Country where the billionaire currently resides |
+| industries | Categorical | The industry/industries in which the billionaire has made their fortune |
+| cpi_country | Numeric | The consumer price index (CPI) of the billionaire's country. CPI measures change in consumer prices over time |
+| gdp_country | Numeric | The gross domestic product (GDP) of the billionaire's country. GDP measures the monetary value of finished goods and services in a country within a specific period of time |
+| tertiary_education_enrollment | Numeric | A ratio of students enrolled in tertiary (post-high school) education to the age group that corresponds to tertiary education |
+| primary_education_enrollment | Numeric | A ratio of students enrolled in primary education to the age group that corresponds to primary education |
+| life_expectancy_country | Numeric | The life expectancy of people in the country where the billionaire resides |
+| tax_revenue_country | Numeric | The highest federal income tax rate (bracket) of the country where the billionaire resides |
+| total_tax_rate_country | Numeric | The individual income tax rate of the country where the billionaire resides |
+| population_country | Numeric | The population of the country where the billionaire resides |
+
+\newpage
+
+### Project Summary
+
+
+**Identify Correlated Variables**:
+At first, our group construct a correlation matrix to identify which two variables has the highest correlation coefficients in our dataset; it turns out that life_expectancy_country and cpi_country has the strongest correlation with each other while life_expectancy_country also has a strong correlation with tertiary_education_enrollment and population_country. Meanwhile, we also observe that the variable finalWorth has barely any correlation with any other quantitative variables in this dataset. As a result, our group decided that it would be best to treat life_expectancy_country as our response variable and see if we can come up with a linear regression model for such response variable. This is because we suspect that treating finalWorth as our response variable will lead to any significant model prediction or accuracy. 
+
+**Feature Engineering**:
+Later on, our group try out some engineering features on our training dataset (by splitting our dataset into 70% training and 30% testing), such as applying log transformation to the top three variables that have the strongest correlation with life expectancy or the response variable. We see that by applying such transformation to the top 3 explanatory variables will produce a stronger association with life expectancy. We also compare our reduced model with only the three log transform variables with the full model and found out that the full model is a  significantly better fit than the reduced model. 
+
+**Model Selection**:
+In addition, our group also performed a forward selection to determine which predictors are more significant to our linear models. We select the number of our predictors based on the adjusted R^2, RSS, BIC, and AIC and decided that a linear model with 7 predictors will yield the best prediction result for our linear model as this allows us to prioritize predictive accuracy over selection consistency. It is worth mentioning that we did include categorical variables like gender into consideration, but based on the results of forward model selection we concluded that excluding such variable would yield a better multiple linear regression model for the life_expectancy response variable. 
+
+Our final Multiple Linear Regression model:
+$\text{life_expectancy}_i = \beta_0 + \beta_1\text{log(cpi)}_i + \beta_2\text{log(population)}_i +\beta_3\text{tax_revenue}_i \\ + \beta_4\text{gdp}_i + \beta_5\text{primary_enrollment}_i + \beta_6\text{tax_rate}_i + \beta_7\text{finalWorth}_i$
+
+```{r}
+fit3 <- lm(life_expectancy_country ~ 
+             log(cpi_country) +
+             log(population_country) +
+             tax_revenue_country + 
+             gdp_country + 
+             primary_enrollment +
+             tax_rate_country +
+             finalWorth,
+           data = billionaires)
+summary(fit3)
+```
+
+As we run our multiple linear regression model on our test dataset, we got similar similar level of accuracy as compared to our pre-trained model. 
+
+With 95% confidence, we see that the mean life expectancy of a billionaire in our model is estimated to be between 76.81321 and 77.11099 years. 
+
+With 95% confidence, a billionaire with the attributes listed previously is predicted to have a life expectancy between 75.25152 and 81.66886 years. 
+
+**Shrinkage Method**
+After selecting our model, we tried out both Lasso and Ridge Shrinkage method to our multiple linear regression model with an aim to avoid overfitting and reduce complexity of our model. We found out that by applying ridge regression method, the coefficients for each predictors does not vary as compare to the coefficients result from our linear fitted model. However, Lasso Regression method yield even better coefficient result as its values aligns almost the exact same as to the coefficient from our selected linear fitted model. This result tells us that there's a strong correlation between our observed value and predicted value.
+
+**Innovation: Box-Cox Transformation**:
+Our group try to improve our model by conducting the box-cox transformation on our response variable life_expectancy_country with an aim to normalize our response variable and improve the fit of our linear regression model. Our result shows that by conducting such a transformation does not drastically improve our model as our R^2 value only increases by a slight number of 0.012. 
+
+### Intriguing/Significant Discoveries
+
+**Wealth disparity among billionaires**: One of the most interesting discoveries that our group made occurred when examining the summary statistics of the finalWorth variable inside the Billionaires dataset, which gives the net worth of each billionaire (in millions). It's normal in practice (as well as within our dataset) for distributions of variables to have much larger means than standard deviations, but this isn't true of finalWorth which has a mean of \$4.6 billion and standard deviation of \$8.9 billion. For the standard deviation of the variable to not only be larger than its mean but two times larger is extremely notable. What this large variation signifies is a wide disparity in wealth among billionaires, which is a surprising concept to most, who tend to view billionaires as equal in stature.  
+
+**Effects of Wealth Inequality**: When looking at a plot of the residuals versus fitted values (shown below) for our statistical model that regressed onto life expectancy of a country, there looked to be two extremely significant outlier countries whose actual values were far lower than their predicted ones. 
+
+```{r}
+resid_data <- data.frame(fitted = fitted(fit3), 
+                         residual = resid(fit3)) 
+ggplot(resid_data, 
+       aes(x = fitted, y = residual)) +
+  geom_point() + 
+  geom_hline(yintercept = 0)
+```
+
+And upon examining the residuals, our group concluded that these two countries were Nigeria and South Africa. A commonality between the two countries, apart from them both being located in Africa, is that they both consistently rank among the highest in the world based on wealth inequality. Thus while it is good for there to be enough industry in these countries for billionaires to exist in them, the gap in wealth between the richest and poorest citizens of each has obvious negative effects. 
+
+**Transformations**: One important discovery our group made in the variable selection and transformation process was that putting log transformations onto the explanatory variables cpi, population, and tertiary enrollment significantly improved their relationship to the response variable - life expectancy. All three saw their pearson correlation coefficient increase by significant amounts, which was reflected by an increase in adjusted $R^2$ values in our models. 
+
+### Engaging/Insightful Analysis
+
+Our group enjoyed the process of variable selection, both manually as well as using selection methods. In steps 1 and 2 we attempted to do so using our intuition and through looking at a predictor's correlation to the response variable, which gave us relatively accurate models. Then in step 3 we used forward selection, which affirmed many of our past findings. The differences between forward selection's conclusions and our group's conclusions was still eye-opening to look at, though, such as in the case of tertiary enrollment where we believed it to be a significant predictor of life expectancy, but the selection features we conduct did not yield such conclucsion.  
+
+### Effectiveness of our Methods
+
+Our group believes that our process in selecting and transforming predictors was particularly effective in steps 2 and 3. In step 1 we identified high correlations between different variables using a correlation matrix, and we built on this in step 2 by selecting life expectancy as the response and cpi as an explanatory. Then in step 3, we built further by noticing that a log transformation of cpi as well as population would strengthen the fit of the model. 
+
+### Conclusions About Overall Data
+
+One important note to make about the data is that despite its name being the 'Billionaires' dataset, the data is largely about the countries that each respective billionaire resides in rather than the billionaires themselves. However, our group is lucky that the original 'Billionaires' dataset was not a sample of the billionaires of the world but rather the entire population, which means that there was no space for mistakes in sampling technique. And within the dataset, nothing seemed to be worthy of further inspection due to data entry errors or such.  
+
+### Inferential Aspect
+
+As mentioned above, the billionaires dataset includes information on all billionaires and their countries. This has the effect of reducing any inference that our group has made about countries to only those with billionaires residing in them, rather than all the countries in the world. Specifically, this limits the scope of inference for our project to 45 countries, with most of them being on the more developed side. 
+
+### Final Thoughts
+
+Overall, our group's investigation of the Billionaires dataset led us on a very unpredictable path. We originally set out to assess trends among the world's most wealthy residents, but soon found out that this was far out of the scope of the dataset's abilities. Thus we shifted our focus onto the countries that these billionaires resided in, and attempted to examine important trends within these countries. And while our findings relating to life expectancy and other phenomena can only be applied to countries where billionaires live, they were extremely interesting nonetheless. 
+
