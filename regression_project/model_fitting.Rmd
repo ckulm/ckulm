@@ -1,0 +1,187 @@
+**for this document to work, the final report rmd must be ran first**
+
+```{r warning = F, message = F}
+library(tidyverse)
+library(naniar)
+library(tidymodels)
+library(countrycode)
+library(rsample)
+library(glmnet)
+library(patchwork)
+library(parsnip)
+library(yardstick)
+library(rpart.plot)
+library(kknn)
+```
+
+# elastic net
+
+```{r}
+en_model <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression") 
+en_wkflow <- workflow() %>%
+  add_model(en_model) %>%
+  add_recipe(sr_recipe)
+en_grid <- grid_regular(
+  penalty(range = c(-5, 5)),
+  mixture(range = c(0, 1)),
+  levels = 10
+)
+```
+
+```{r eval = F}
+en_tune <- tune_grid(
+  en_wkflow,
+  resamples = sr_folds,
+  grid = en_grid,
+  metrics = metric_set(mae, rmse, rsq)
+)
+write_rds(en_tune, "models/elastic_net.rds")
+```
+
+```{r}
+elastic_net <- read_rds("models/elastic_net.rds")
+best_en <- select_best(elastic_net, metric = "mae")
+en_final_wkflow <- finalize_workflow(en_wkflow, best_en)
+en_fit <- fit(en_final_wkflow, sr_train)
+en_performance <- augment(
+  en_fit, new_data = sr_train
+)
+write_rds(en_performance, "models/performance_elastic_net.rds")
+```
+
+# knn
+
+```{r}
+knn_model <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+knn_wkflow <- workflow() %>%
+  add_model(knn_model) %>%
+  add_recipe(sr_recipe)
+knn_grid <- grid_regular(
+  neighbors(range = c(1, 10)),
+  levels = 10
+)
+```
+
+```{r eval = F}
+knn_tune <- tune_grid(
+  knn_wkflow,
+  resamples = sr_folds,
+  grid = knn_grid,
+  metrics = metric_set(mae, rmse, rsq)
+)
+write_rds(knn_tune, "models/k_nearest_neighbors.rds")
+```
+
+```{r}
+k_nearest_neighbors <- read_rds("models/k_nearest_neighbors.rds")
+best_knn <- select_by_pct_loss(k_nearest_neighbors, metric = "mae", limit = 10, desc(mean))
+knn_final_wkflow <- finalize_workflow(knn_wkflow, best_knn)
+knn_fit <- fit(knn_final_wkflow, sr_train)
+knn_performance <- augment(
+  knn_fit, new_data = sr_train
+)
+write_rds(knn_performance, "models/performance_k_nearest_neighbors.rds")
+```
+
+```{r}
+k_nearest_neighbors
+```
+
+# decision tree
+
+```{r}
+dt_model <- decision_tree(cost_complexity = tune(), tree_depth = tune(), min_n = tune()) %>%
+  set_engine("rpart") %>%
+  set_mode("regression")
+dt_wkflow <- workflow() %>%
+  add_model(dt_model) %>%
+  add_recipe(sr_recipe)
+dt_grid <- grid_regular(
+  cost_complexity(range = c(-5, 5)),
+  tree_depth(range = c(1, 20)),
+  min_n(range = c(2, 7)),
+  levels = 10
+)
+```
+
+```{r eval = F}
+dt_tune <- tune_grid(
+  dt_wkflow,
+  resamples = sr_folds,
+  grid = dt_grid,
+  metrics = metric_set(mae, rmse, rsq)
+)
+write_rds(dt_tune, "models/decision_tree.rds")
+```
+
+```{r}
+decision_tree <- read_rds("models/decision_tree.rds")
+best_dt <- select_best(decision_tree, metric = "mae")
+dt_final_wkflow <- finalize_workflow(dt_wkflow, best_dt)
+dt_fit <- fit(dt_final_wkflow, sr_train)
+dt_performance <- augment(
+  dt_fit, new_data = sr_train
+)
+write_rds(dt_performance, "models/performance_decision_tree.rds")
+```
+
+```{r}
+dt_test_fit <- fit(dt_final_wkflow, sr_test)
+write_rds(dt_test_fit, "models/dt_test_fit.rds")
+dt_test_performance <- augment(
+  dt_test_fit, sr_test
+)
+write_rds(dt_test_performance, "models/test_performance_decision_tree.rds")
+```
+
+
+# random forest
+
+```{r}
+rf_model <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+rf_wkflow <- workflow() %>%
+  add_model(rf_model) %>%
+  add_recipe(sr_recipe)
+rf_grid <- grid_regular(
+  mtry(range = c(1, 7)),
+  trees(range = c(0, 100)),
+  min_n(range = c(2, 10)),
+  levels = 10
+)
+```
+
+```{r eval = F}
+rf_tune <- tune_grid(
+  rf_wkflow,
+  resamples = sr_folds,
+  grid = rf_grid,
+  metrics = metric_set(mae, rmse, rsq)
+)
+write_rds(rf_tune, "models/random_forest.rds")
+```
+
+```{r}
+random_forest <- read_rds("models/random_forest.rds")
+best_rf <- select_best(random_forest, metric = "mae")
+rf_final_wkflow <- finalize_workflow(rf_wkflow, best_rf)
+rf_fit <- fit(rf_final_wkflow, sr_train)
+rf_performance <- augment(
+  rf_fit, new_data = sr_train
+)
+write_rds(rf_performance, "models/performance_random_forest.rds")
+```
+
+```{r}
+rf_test_fit <- fit(rf_final_wkflow, sr_test)
+write_rds(rf_test_fit, "models/rf_test_fit.rds")
+rf_test_performance <- augment(
+  rf_test_fit, sr_test
+)
+write_rds(rf_test_performance, "models/test_performance_random_forest.rds")
+```

@@ -1,0 +1,12 @@
+Name / Data Type / Measurement / Description
+-----------------------------
+Country / nominal / -- / country of interest
+continent / nominal / -- / location of country
+crude / continuous / per 100000 / number of suicides per year, divided by country population then multiplied by 100000
+mental_hospitals / continuous / per 100000 / mental hospitals per 100000
+health_units / continuous / per 100000 / mental health units in general hospitals per 100000
+outpatient_facilities / continuous / per 100000 / mental health outpatient facilities per 100000
+Psychiatrists / continuous / per 100000 / psychiatrists in mental health sector per 100000
+Nurses / continuous / per 100000 / nurses in mental health sector per 100000
+Social_workers / continuous / per 100000 / social workers in mental health sector per 100000
+Psychologists / continuous / per 100000 / psychologists in mental health sector per 100000

@@ -1,0 +1,476 @@
+---
+title: "Country Suicide Rates"
+author: "Carter Kulm"
+date: "Fall 2024"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: lumen
+  pdf_document: 
+    fig_crop: no
+---
+
+```{r setup, include = F}
+# knit options
+knitr::opts_chunk$set(echo = F,
+                      results = 'markup',
+                      fig.width = 3.35,
+                      fig.height = 2.35,
+                      fig.align = 'center',
+                      message = F,
+                      warning = F)
+
+bfcolor <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    sprintf("\\textcolor{%s}{\\textbf{%s}}", color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'><b>%s</b></span>", color, x)
+  } else x
+}
+```
+
+```{r packages, include = F}
+library(tidyverse)
+library(naniar)
+library(tidymodels)
+library(countrycode)
+library(rsample)
+library(glmnet)
+library(patchwork)
+library(parsnip)
+library(yardstick)
+library(vip)
+```
+
+# Introduction
+
+### Data
+
+For my project I chose the Mental Health and Suicide Rates datasets which I found on Kaggle linked [here](https://www.kaggle.com/datasets/twinkle0705/mental-health-and-suicide-rates/data), and whose data was drawn directly from the World Health Organization (WHO) in 2016. All of the data that I used from Kaggle was utilized for predicting my response variable, suicide rate. I was able to extract the suicide rates of each country in 2016 linked [here](https://www.google.com/url?sa=t&source=web&rct=j&opi=89978449&url=https://www.who.int/data/gho/data/themes/mental-health/suicide-rates&ved=2ahUKEwj9z4PKwMOJAxUwJUQIHX99Ic8QFnoECC4QAQ&usg=AOvVaw3T7PYXcy2pwyDs2oUUSm-z) from the WHO database, and was able to combine the predictors from the Kaggle datasets with the response variable included in the WHO dataset. Citations for both datasets are provided at the end of the `Introduction` section. 
+
+Due to the necessary data not being available for all countries, there are only 99 observations in the combined dataset, all of which provide statistics about the suicide rates in each included country. 10 total variables are included, and 7 of these variables were employed as predictors. All variables that will work as predictors are continuous and numeric, as is the response. Explanations for each of these variables can be found in the code book for this project, but among the predictors are the number of mental health facilities or professionals per 100000 in each country, while the crude suicide rate per 100000 in each country serves as the response. 
+
+### Goal of Research
+
+As mentioned above, I'm interested in utilizing each country's statistics about mental health support to regress onto their respective suicide rates. A specific goal of mine in this project is determining which specific mental health facilities or personnel groups most affect the suicide rate within a country. I believe that the use of statistical modelling has the potential for positive impact on all people of the world, no matter the country. My hope is that this research could contribute evidence (no matter how small) towards sending more funds towards effective mental health treatment, or conversely pulling funds from ineffective ones, because well-being should be a primary focus of any population. 
+
+### Background Reading
+
+For background reading, I believe that [this article](https://www.commonwealthfund.org/publications/2024/may/mental-health-needs-us-compared-nine-other-countries) lays out the urgency and importance of mental health in several countries. 
+
+**Citations**: 
+
+World Health Organization. (n.d.). Suicide rates. World Health Organization. https://www.who.int/data/gho/data/themes/mental-health/suicide-rates 
+
+Khanna, T. (2020, July 15). Mental health and suicide rates. Kaggle. https://www.kaggle.com/datasets/twinkle0705/mental-health-and-suicide-rates/data 
+
+Mental health needs in the U.S. compared to nine other countries. Mental Health Needs in the U.S. Compared to Selected Countries | Commonwealth Fund. (2024, May 31). https://www.commonwealthfund.org/publications/2024/may/mental-health-needs-us-compared-nine-other-countries 
+
+# Preprocessing
+
+### Data Tidying
+
+```{r load data, include = F}
+# Read in data from WHO, Kaggle
+crude_sr <- read.csv("~/Desktop/PSTAT 131/Project/Deliverables/data/newdata.csv") %>%
+  filter(Period == 2016, Dim1ValueCode == "SEX_BTSX") %>%
+  select(Location, FactValueNumeric) %>%
+  rename(Country = Location, crude = FactValueNumeric)
+facilities <- read.csv("~/Desktop/PSTAT 131/Project/Deliverables/data/Facilities.csv")
+hr <- read.csv("~/Desktop/PSTAT 131/Project/Deliverables/data/Human Resources.csv")
+```
+
+Below, we join the three datasets drawn from WHO and Kaggle. 
+
+```{r echo = T}
+# Create singular dataframe
+suicide_rate <- crude_sr %>%
+  inner_join(
+    facilities, by = "Country"
+  ) %>%
+  inner_join(
+    hr, by = "Country"
+  )
+```
+
+The `crude_sr` dataset is drawn from the WHO (World Health Organization) data base and consists of the crude suicide rates (per 100000 people) of 183 countries across the world, which will serve as our response values. Meanwhile, the `facilities` and `hr` datasets were drawn from Kaggle and contain the predictors for crude suicide rate. Included in `facilities` are the rates of mental health facilities present in a country per 100000 people (mental hospitals, outpatient centers, health_units) and in `hr` are the rates of mental health personnel in each country per 100000 (psychologists, psychiatrists, mental health nurses, social workers). 
+
+```{r include = F}
+# rename certain columns
+suicide_rate <- suicide_rate %>%
+  rename(
+    mental_hospitals = Mental._hospitals,
+    outpatient_facilities = outpatient._facilities,
+    day_treatment = day._treatment
+  )
+
+# erase features irrelevant to research question
+suicide_rate <- suicide_rate %>%
+  select(
+    -c(Year.x, Year.y)
+  )
+```
+
+### Missing Data
+
+```{r fig.width = 10, fig.height = 6}
+# display missingness
+suicide_rate %>%
+  vis_miss()
+```
+
+From the `vis_miss` function, we produce the figure above and see that there is an extremely large amount of data missing from the `day_treatment` and `residential_facilities` variables. Meanwhile, the `Social_workers` variable is also missing a large portion of data while the rest of the predictors are missing a small amount of data. 
+
+We will deal with most of the missing data through imputation, but in the case of the `day_treatment` and `residential_facilities` variables, over 50% of observations are absent. Since the primary application of the model is ultimately inference, imputing large amounts of data for specific variables would likely introduce too much bias. Thus we will remove these two aforementioned features from the dataset. 
+
+```{r echo = T}
+# erase features
+suicide_rate <- suicide_rate %>%
+  select(
+    -c(day_treatment, residential_facilities)
+  )
+```
+
+The first 6 observations from our (semi)finalized dataset can be seen below.
+
+```{r}
+knitr::kable(suicide_rate[1:6, ], format = "markdown")
+```
+
+# EDA
+
+### Treating Missingness
+
+To then see what method of imputation would fit our data best, we will visualize the distribution of the remaining predictors. 
+
+```{r warning = F, message = F, fig.height = 5, fig.width = 8}
+h1 <- ggplot(suicide_rate, aes(x = mental_hospitals)) + geom_histogram() + xlab(colnames(suicide_rate)[3])
+h2 <- ggplot(suicide_rate, aes(x = health_units)) + geom_histogram() + xlab(colnames(suicide_rate)[4])
+h3 <- ggplot(suicide_rate, aes(x = outpatient_facilities)) + geom_histogram() + xlab(colnames(suicide_rate)[5])
+h4 <- ggplot(suicide_rate, aes(x = Psychiatrists)) + geom_histogram() + xlab(colnames(suicide_rate)[6])
+h5 <- ggplot(suicide_rate, aes(x = Nurses)) + geom_histogram() + xlab(colnames(suicide_rate)[7])
+h6 <- ggplot(suicide_rate, aes(x = Social_workers)) + geom_histogram() + xlab(colnames(suicide_rate)[8])
+h7 <- ggplot(suicide_rate, aes(x = Psychologists)) + geom_histogram() + xlab(colnames(suicide_rate)[9])
+h1 + h2 + h3 + h4 + h5 + h6 + h7 + plot_layout(nrow = 3, ncol = 3, axis_titles = "collect")
+```
+
+As we can see from the above histograms, each distribution is skewed right, so using the median to impute values would be an optimal method of imputation. If we were to impute missing values using the mean of each variable, this would cause the overall distribution of each variable to then be skewed towards higher values. The imputation will later be implemented when we set up the recipe for our models. 
+
+### Correlation
+
+We'll first explore the correlation between variables in the training set using a correlation matrix.
+
+```{r fig.height = 4, fig.width = 4}
+suicide_rate %>%
+  select(is.numeric) %>%
+  cor(use = "pairwise.complete.obs") %>%
+  corrplot::corrplot(type = "lower")
+```
+
+Based on the correlation matrix above, there are no predictors that are heavily correlated with the response `crude`; however, `Psychiatrists`, and `Nurses` are both slightly positively correlated with it. Furthermore, we see highly positive correlations within some of the predictors, which is to be expected considering the nature of the relationships between some (ie. `mental_hospitals` and `nurses`). These strong correlations encourage us to look into regularization methods down the road, although it should be noted that these methods do add  a degree of complexity to the interpretation of features. 
+
+One interesting feature of the matrix is that there are no negative correlations shown, whether this be between predictor and predictor or predictor and response. Particularly in the case of predictor and response, this conveys that an increase in the presence of facilities or human resources does not, on the surface, result in a decrease in suicide rate. 
+
+Now we will look at the plotted relationships between the crude suicide rate of a country and each individual variable in the training set. 
+
+```{r warning = F, message = F, fig.height = 5, fig.width = 8}
+s1 <- ggplot(suicide_rate, aes(x = crude, y = mental_hospitals)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[3])
+s2 <- ggplot(suicide_rate, aes(x = crude, y = health_units)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[4])
+s3 <- ggplot(suicide_rate, aes(x = crude, y = outpatient_facilities)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[5])
+s4 <- ggplot(suicide_rate, aes(x = crude, y = Psychiatrists)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[6])
+s5 <- ggplot(suicide_rate, aes(x = crude, y = Nurses)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[7])
+s6 <- ggplot(suicide_rate, aes(x = crude, y = Social_workers)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[8])
+s7 <- ggplot(suicide_rate, aes(x = crude, y = Psychologists)) + geom_point() +xlab("Crude Suicide Rate (per 100000)") + ylab(colnames(suicide_rate)[9])
+s1 + s2 + s3 + s4 + s5 + s6 + s7 + plot_layout(nrow = 3, ncol = 3, axis_titles = "collect")
+```
+
+These plots primarily affirm our findings from the correlation matrix in that each variable appears to be at least slightly positively correlated with the response. We notice that for select variables such as `mental_hospitals`, `Social_workers`, or `Psychologists`, the correlation is particularly hard to identify. On the flip side, the positive association between `Nurses` and the response is made very apparent from the plot above. Regardless, these scatter plots do not provide enough evidence on their own to claim that any predictor is more or less effective than any other at reducing suicide rates in a given country.
+
+### Continent-Wise
+
+Since each observation listed in the dataset is a country, more information about the data may be obtained if we visualize the distribution of the response, `crude`, faceted by continent. We can add the continents to our dataset using the `countrycode` package, which gives each country its associated continent. We must then separate out North America and South America manually as `countrycode` does not do this automatically. 
+
+```{r add continents, echo = T}
+# list continent for each country
+suicide_rate <- suicide_rate %>%
+  mutate(
+    continent = countrycode(
+      sourcevar = Country,
+      origin = "country.name",
+      destination = "continent"
+    )
+  )
+# reorder columns
+suicide_rate <- suicide_rate[, c(1, 10, 2:9)]
+# separate NA from SA
+suicide_rate <- suicide_rate %>%
+  mutate(continent = 
+    ifelse(
+      continent == "Americas",
+      ifelse(
+      Country %in% c("Argentina", "Bolivia", "Brazil", "Chile",
+                     "Colombia", "Ecuador", "Guyana", "Paraguay", 
+                     "Peru", "Suriname", "Uruguay", "Venezuela"),
+      "South America",
+      "North America"
+      ),
+      continent
+    )
+  )
+```
+
+Now that we have each country's continent, we can view the distribution of suicide rate across different continents. 
+
+```{r fig.width = 8, fig.height = 6}
+suicide_rate %>%
+  ggplot(
+    aes(x = crude)
+  ) +
+  geom_histogram() +
+  facet_wrap(~ continent) +
+  xlab("Crude Suicide Rate (per 100000)")
+```
+
+Firstly, it appears that Africa and Asia contain the most observations within the dataset. Europe, though it has a low number of countries included, appears to have a generally higher suicide rate when compared to the other continents. Meanwhile, both North America and Africa have relatively low centers of the response. Another interesting feature of the above visualizations which we can see is that a particular country in South America holds the highest suicide rate, which stands out from the continent's relatively low rates.  
+
+Although the crude suicide rates certainly differ across continents, there does not seem to be any reason for us to create separate models for different continents or include continent as a predictor in our model. Introducing a dummy-coded variable to our model recipes would harm the interpretability of each model, which is a primary goal of this research. With this being said, analyzing the differences in human resources or mental health facilities across these different continents and in turn seeing how this affects suicide rate would make for another interesting project idea. 
+
+# Model Setup
+
+### Train/Test Split
+
+Prior to fitting models or setting up recipes, we should partition the data into training and testing splits. By setting aside a certain percentage of data to only be used for testing model accuracy, we are ensuring that our models not only fit the data that they're given to train on but also new data. 
+
+```{r echo = T}
+set.seed(27)
+
+sr_split <- suicide_rate %>%
+  dplyr::select(
+    -Country, -continent # disclude Country, continent 
+    ) %>%
+  initial_split(
+    prop = 0.8,
+    strata = crude
+    )
+# obtain training and testing splits
+sr_train <- training(sr_split)
+sr_test <- testing(sr_split)
+```
+
+We set aside 80% of the data in the `suicide_rate` dataset to be used for training models, which is the current standard, as most data should be utilized for training, but a not insignificant portion must be saved as well. For this dataset, this equates to 79 observations being in the training set and 20 being in the testing set. We also make sure to stratify our splits on the response, `crude`, which guarantees that the distribution of the response variable in the original dataset is reflected in the training and testing sets. And, for reasons mentioned in the previous section we will not be including `continent` in our splits. 
+
+### Cross-Validation Folds
+
+In addition to partitioning our dataset into training and testing sets, we will further partition the training set in order to create "folds" of cross-validation data. This data will subsequently be used to tune hyperparameters in the models to be fit. Using 5 or 10 folds is standard, so we will opt to use 5 which will help with performance time of the code.
+
+```{r}
+sr_folds <- vfold_cv(sr_train, v = 5, strata = crude)
+```
+
+The `vfold_cv` function requires inputted data, a specified number of folds (v), and optionally a variable to stratify on. Our training folds will be drawn from the training partition, as mentioned before 5 folds will be used, and we again stratify on our response variable. Thus we now have validation folds which are necessary for tuning model hyperparameters in the future.
+
+### Model Recipe
+
+Setting up a recipe using the `tidymodels` package will help tremendously with the ease of fitting multiple models in addition to applying any further preprocessing steps. 
+
+```{r echo = T}
+sr_recipe <- recipe(crude ~ ., data = sr_train) %>%
+  step_impute_median(mental_hospitals, health_units, outpatient_facilities,
+                     Psychiatrists, Nurses, Social_workers, Psychologists) %>%
+  step_normalize(all_predictors())
+```
+
+In our specific case, the preprocessing steps include imputing missing values in our predictors using the median of each variable (accomplished using `step_impute_median`) and normalizing each predictor. Normalizing the values of numerical predictors consists of centering and scaling, which essentially sets the range of each predictor from 0 to 1. Doing this preprocessing step helps to prevent any predictor with a larger range/magnitude from being given greater importance than predictors with lower magnitudes. 
+
+We should note that the `sr_train` data is used in the model recipe, which is our training partition created earlier. The recipe specifies that `crude` is the variable being predicted, and every other variable in `sr_train` is being used to predict it. And, now that we have specified one model recipe, we can use this recipe across all models that will be created.   
+
+# Model Fitting
+
+### First (Example) Model
+
+To give the reader a more in-depth understanding of the model fitting process, I'll illustrate the process of fitting a very basic linear regression model. 
+
+First, we must construct the model to be used. In most cases this consists of specifying the type of model, type of engine, and type of algorithm/mode to be used. 
+
+```{r echo = T}
+lr_model <- linear_reg() %>%
+  set_engine("glm") %>%
+  set_mode("regression")
+```
+
+In the example above, we create `lr_model` (lr = linear regression), where `linear_reg` is specified as our model of choice. In the future if we wish to declare hyperparameters that are to be tuned, we will declare those parameters within the model specification. We feed `glm` (generalized linear model) to be the engine of this model, which allows us to build linear models. While we are only attempting to build a linear regression model for this example, the `glm` engine also allows for more advanced models such as logistic or poisson regression. Lastly, we specify the algorithm of our model to be `regression`, which will not change across any model. 
+
+After building our model, we then move on to setting up the model's workflow, which essentially consists of combining the model recipe and model fit. In our specific case, creating a workflow will help apply our preprocessing steps to the data as well. 
+
+```{r echo = T}
+lr_wkflow <- workflow() %>%
+  add_model(lr_model) %>%
+  add_recipe(sr_recipe)
+```
+
+As we can see above, the `workflow` object takes in the model fit that was specified in our last step as well as the recipe. Now, we are ready to fit our model. In other cases where we would like to tune hyperparameters, we would have to specify parameters to be tuned (as mentioned above), the range (and number) of these parameters that will be tuned, and lastly the metrics that should be used to ultimately choose the value of the tuned parameter, which will be discussed later. We would then proceed to tune said parameters using the `grid_regular` and `tune_grid` functions in conjunction with our cross-validation folds. 
+
+Onto the fitting!
+
+```{r echo = T}
+lr_fit <- fit(lr_wkflow, sr_train)
+```
+
+We create a `fit` object by feeding it the linear regression model workflow as well as the training data. It's extremely important to note here that if we were truly evaluating the accuracy of our model, we would feed the **test** data, `sr_test`, rather than `sr_train` into the `fit` object. 
+
+### Evaluation of Models
+
+After computing the fit of a model, we move on to evaluating the accuracy of that model's predictions. We do so by using a metric set which contains three metrics: r-squared (RSQ), root mean squared error (RMSE), and mean absolute error (MAE). Each metric has unique pros and cons, which is why all three will be computed. Below are the results of evaluating these metrics on the linear regression model. 
+
+```{r fig.width - 4}
+performance_metric_set <- metric_set(rsq, rmse, mae)
+lr_performance_tibble <- augment(
+  lr_fit, new_data = sr_train
+)
+performance_metric_set(lr_performance_tibble, truth = crude, estimate = .pred) %>%
+  knitr::kable(format = "markdown")
+```
+
+Again, it is extremely important to note that these metrics do not reflect how the linear regression model would perform on new/test data, but rather against the data that it was trained on. Based on the values displayed for each of the metrics, our linear regression model did not perform very well, which is to be expected. 
+
+When comparing models against each other, one metric must be used to decide which is a better fit for the data. As mentioned above each provides its own benefits, but mean absolute error likely fits our purposes better than the other two metrics. R-squared is a useful metric for analyzing a given model's accuracy, but assumes that all predictors are independent of each other, which we know to be untrue in our situation. And, RMSE fits well if we wish to punish large errors harshly, but lacks interpretability. Thus MAE, which is not hyper-sensitive to outliers and, most importantly for us, is easily interpretable, will be the deciding metric. The ease of interpretability stems from its formula, which simply averages out the absolute value of each error/residual. 
+
+# Fitted Model Results
+
+### Elastic Net
+
+Elastic net models attempt to combine the strengths and limit the weaknesses of the lasso and ridge regression techniques through using a mixture of both. Lasso and ridge regression are both forms of regularization in which we look to generalize our models so that they don't fall victim to overfitting on their training sets. Shown below is the result of tuning the two hyperparameters required for elastic net models, `penalty` and `mixture`. `penalty` controls the amount of regularization that is performed on the predictors, which shrinks some of the coefficient values or sets them to 0. `mixture`, on the other hand, controls the proportion of influence that the lasso and ridge penalties have on the elastic net penalty, with a value of 0 representing a fully ridge regression model and a value of 1 indicating a lasso regression model.
+
+```{r fig.width = 5, fig.height = 3}
+elastic_net <- read_rds("models/elastic_net.rds")
+autoplot(elastic_net, metric = "mae") +
+  labs(x = "Penalty", color = "Mixture")
+```
+
+From the plot generated above, we see that the model performed best (returned lowest MAE value) with `penalty` values at around 1.0 and `mixture` levels of 0.11 and 1.00. Specifically, the best performing model had a `penalty` of 3.59 and a mixture of `0.11`. Interestingly, very small or large values of the amount of regularization appear to hurt the MAE of the model while small/large values of the `mixture` parameter perform best. We can extract the elastic net model with the optimal values of the tuned hyperparameters and display its evaluation metrics below:
+
+```{r}
+en_performance <- read_rds("models/performance_elastic_net.rds")
+performance_metric_set(en_performance, truth = crude, estimate = .pred) %>%
+  knitr::kable(format = "markdown")
+```
+
+Thus it appears that elastic net not only performed poorly on the training set, but performed even worse than the basic linear regression model. However, this is to be expected due to regularization techniques emphasizing generalization over accuracy as mentioned previously. In other words, we would expect the model to perform similarly on a testing set as it did for the training set, while with unregularized methods we generally expect slightly worse performance on testing sets. 
+
+### KNN (K-nearest neighbors)
+
+K-nearest neighbors is another relatively intuitive regression technique where we arrive at a prediction by averaging out the values of the k nearest data points (neighbors) closest to a given input. K, or `neighbors`, will serve as our sole hyperparameter to be tuned in the modelling process.
+
+```{r fig.width = 3, fig.height = 2}
+k_nearest_neighbors <- read_rds("models/k_nearest_neighbors.rds")
+autoplot(k_nearest_neighbors, metric = "mae") +
+  xlim(0, 10)
+```
+
+Differently from other models, we will not select a specific value of the hyperparameter to use based solely on the MAE that it returns but rather by looking at the plot of MAE plotted against `neighbors`. As we did not include any hyperparameter tuning that would help overfitting our model, we will instead use the elbow method to choose our value for `neighbors`, which tells us to select the value of the parameter where the metric begins to decrease at a slower rate. In our case, this looks to be right at `neighbors` = 4, which results in an MAE of just over 5.0.  
+
+```{r}
+collect_metrics(k_nearest_neighbors) %>%
+  filter(neighbors == 4) %>%
+  select(.metric, .estimator, mean) %>%
+  knitr::kable(format = "markdown")
+```
+
+Unfortunately, the best KNN model did not perform very well on our data, with an MAE worse than the elastic net and linear regression models, as well as equally low RSQ and RMSE values. However, this may be another case of slight underfitting due to utilizing the elbow method to select an optimal value for `neighbors` rather than choosing the value that yielded the lowest MAE. 
+
+### Decision Tree
+
+The structure of a decision tree is very intuitive: every node in the tree represents a decision to be made that divides observations into two groups, every branch in the tree represents the result of those decisions, and each leaf node at the end of the tree represents a prediction. While many prefer random forests, which combine multiple decision trees into one model and often produce higher accuracy, decision trees can be very helpful for interpretability purposes. For decision trees we will tune 3 hyperparameters: `cost_complexity`, which tries to prevent overfitting by balancing how complex a tree is and how well it fits the data, `tree_depth`, which controls the maximum number of nodes in a tree, and `min_n`, which decides the minimum number of observations required to continue a branch. The results of this tuning is shown below: 
+
+```{r fig.width = 6, fig.height = 5}
+decision_tree <- read_rds("models/decision_tree.rds")
+autoplot(decision_tree, metric = "mae")
+```
+We can firstly observe that `min_n`, or the minimum number of nodes required to continue a branch, looks to only slightly affect the MAE of a tree. With this being said, a `min_n` value of 4 appears to harm MAE when combined with a low `cost_complexity` value. The cost complexity of a tree had a consistent effect on the MAE value for different models, with most models performing best when `cost_complexity` had a value of around 1. However, the best performing models consisted of trees with a maximum depth of only 1 (`tree_depth` = 1) node with extremely low cost complexities. A decision tree with `cost_complexity` equal to 0.00001, `tree_depth` equal to 1, and `min_n` equal to 2 was the best performer, but it should be noted that almost every model with `tree_depth` equal to 1 had an equally low MAE. 
+
+```{r}
+dt_performance <- read_rds("models/performance_decision_tree.rds")
+performance_metric_set(dt_performance, truth = crude, estimate = .pred) %>%
+  knitr::kable(format = "markdown")
+```
+
+Based on the metrics shown above, the best performing decision tree significantly outperformed the previous models in each metric. It seems that the shallowest trees resulted in the best metrics, which is not a common phenomenon among decision trees due to the fact that shallower trees tend to underfit data. 
+
+### Random Forest 
+
+A random forest model, as mentioned before, is an ensemble learning method that combines the decisions of multiple decision trees by averaging out the predictions for a given set of input values. We should also note that random forests employ randomized feature selection for every node in a tree, represented by the hyperparameter `mtry`. We tune two further hyperparameters: `trees`, which decides how many trees' predictions should be aggregated to arrive at a final prediction, and `min_n`, which serves the same purpose as it does for decision trees. 
+
+```{r fig.width = 8, fig.height = 5}
+random_forest <- read_rds("models/random_forest.rds")
+autoplot(random_forest, metric = "mae")
+```
+
+The main component of our hyperparameter tuning for random forests that stands out is that as the `mtry` for the models increase, so does the MAE. Thus, models with only one predictor making decisions at each split perform better than others, which is a similar result to what our decision tree hyperparameter tuning produced. Additionally, the random forests did not appear to be very affected by `min_n` and `trees`. Overall, the highest performing random forest model had hyperparameters values of `mtry` = 1, `trees` = 88, and `min_n` = 7. Below we see the metrics this model produced.
+
+```{r}
+collect_metrics(random_forest) %>%
+  filter(mtry == 1 & trees == 88 & min_n == 7) %>%
+  select(.metric, .estimator, mean) %>%
+  knitr::kable(format = "markdown")
+```
+
+Surprisingly, we see a higher MAE value from the best performing random forest when compared to the best performing decision tree model. There is, however, a chance that the random forest model will adapt better to new data though. 
+
+# Best Two Model Testing Results
+
+Out of the four models that we fit to the training set (5 counting linear regression), we will choose the best two performers in terms of the MAE they produced. This results in selecting the decision tree (MAE of 3.95) and random forest (MAE of 4.35) models, which we will now fit and evaluate against the testing split!
+
+### Decision Tree
+
+We can first observe the test metrics for our decision tree model. 
+
+```{r}
+dt_test_performance <- read_rds("models/test_performance_decision_tree.rds")
+performance_metric_set(dt_test_performance, truth = crude, estimate = .pred) %>%
+  knitr::kable(format = "markdown")
+```
+
+As shown above, the best decision tree model performed exceptionally well against our testing set, at least when compared to its performance on the training set. The R-squared value nearly doubled in size while both root mean squared error and mean absolute error both saw large decreases in value as well. A possible explanation for this leap in performance could be that for whatever reason, our decision trees were underfit in the modelling process which normally leads to higher testing set accuracy. In the specific case of decision trees we tuned the `cost_complexity` parameter for values from -5 to 5; in the future, we may want to use decreased values of this parameter that would result in larger decision trees. 
+
+Shown below is the variable importance plot for the decision tree fit on the testing data. Variable importance does not measure the predictive power of a variable but rather how much that variable was utilized in the process of predicting values, which is important to distinguish here. 
+
+```{r}
+dt_test_fit <- read_rds("models/dt_test_fit.rds")
+vip(extract_fit_parsnip(dt_test_fit))
+```
+
+Firstly, it's alarming that there are only 5 predictors shown on the plot while 7 existed in the dataset, which for most models would be an error. However for our case, this is due to the top performing decision tree having a `tree_depth` value of 1, which means that the two predictors left out of the plot (`Social_workers` and `health_units`) were not used once in the process of fitting the test data. Apart from these two notable omissions, the amount of mental health psychiatrists psychologists, and nurses per 100000 appear to have the greatest importance in the process of predicting suicide rate. Meanwhile, the two mental health facility variables that were included in the plot have far lower scores than the human resource variables. 
+
+### Random Forest
+
+Below are the top performing random forest's results from being evaluated against the testing set. 
+
+```{r}
+rf_test_performance <- read_rds("models/test_performance_random_forest.rds")
+performance_metric_set(rf_test_performance, truth = crude, estimate = .pred) %>%
+  knitr::kable(format = "markdown")
+```
+
+In a similar fashion to our top performing decision tree, the random forest performed significantly better on the testing set than on the training set. While this model had a slightly worse training MAE than the best decision tree model, it yielded a far better testing MAE value. This again leads one to believe that underfitting could've been at play in the modelling process. And as for a hyperparameter value that would lead to such underfitting, the number of trees, `trees`, may have been given too low of a range for larger, more overfit trees to show their MAE values.
+
+We now view the variable importance plot of the random forest's fit on the testing data.
+
+```{r}
+rf_test_fit <- read_rds("models/rf_test_fit.rds")
+vip(extract_fit_parsnip(rf_test_fit))
+```
+
+Unlike its decision tree counterpart, the random forest variable importance plot contains all 7 predictors. Another main difference between the two plots is that we see a mental health facility (`mental_hospitals`) have a large importance score for the random forest fit, which tells us that their presence is an important component of the predictive process. However, similarly to the decision tree plot we see that psychologists, psychiatrists, and nurses are among the most important variables, and in general facilities are given lower importance scores than human resources. 
+
+# Conclusion
+
+While the accuracy of the models fit in this report are far from optimal and at best inconsistent, I am satisfied with the overall results. The very poor performance of the models fit against the training set and subsequent better performance against the testing set suggests that underfitting may have been at play during the fitting process, at least for the decision tree and random forest models.
+
+Speaking of these two models, it does not seem insignificant that the two top performers used on the training set are tree-based. This could tell us that there are certain trends within the suicide rate data that are harder for other models to pick up but for unknown reasons (perhaps assessing variable importance?) are dealt with well by tree-based ones. It's also important to mention how well the basic linear regression model performed on the training data, which tells us that linear models such as generalized additive models (GAMs) or ones with variable transformations may be worth exploring.
+
+One kind of learning method that was not explored in this report but may help to model similar data in the future are neural networks. NNs were not implemented here due to the amount of data that is required for them to prove effective, but their complex black box nature may help to capture patterns that cannot be recognized by simpler methods. 
+
+If I were to conduct further analysis of suicide rates, I would likely dedicate more effort towards analyzing trends at a regional level, whether that be subcontinental or zoomed in even further into smaller groups of countries. Cultural, social, economic, or religious factors (to name a few) are certainly predictive of how mental health is perceived and treated, and viewing the suicide rates of countries without context of these components is unreasonable. Additionally, further information on the state of mental health facilities or personnel in each country would also have been extremely useful for my purposes, as each predictor used in this analysis was based solely on quantities of resources, which are certainly important in predicting how effective they are at impacting suicide rate. However, this quantitative information alone disregards many crucial aspects of treating mental health disorders, which could also depend on details such as how the resources are implemented by the state or how well kept/paid they are, among others. 
+
+Mental health as a whole makes for a very interesting and impactful research topic, but also one that proves very difficult to come to concrete conclusions about. If it were so easy to study, and mental health disorders so easy to diagnose or treat, then I would not put myself in the position to research its effects today. The inconsistency of suicide rates across the world in particular make the task of predicting them so difficult. For example, the country with the highest suicide rate in the world is Lesotho (not included in our dataset), with 87.5 deaths by suicide per 100000 people, as of 2019. There are quite a few unique factors at play that have resulted in this particular country having an extraordinarily high rate of suicide (more than double than the second highest), yet these same factors can be seen in other nations with relatively normal suicide rates. Thus, the unanswered questions surrounding severe mental health disorders make research into this topic all the more urgent and necessary, which is why I'm so glad that I devoted my project to investigating it. 
